@@ -1,0 +1,5 @@
+openai==3.16.2
+python-dotenv==1.2.3
+tiktoken==0.14.0
+google-genai==2.24.0
+httpx==0.28.1

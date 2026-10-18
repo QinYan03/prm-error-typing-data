@@ -1,0 +1,7 @@
+.env
+__pycache__/
+.DS_Store
+
+# Runtime-generated intermediate files, except the frozen pilot sample
+outputs/*
+!outputs/pilot_4class_sample_ds.json
