@@ -1,6 +1,6 @@
 # Fine-Grained Error Typing Data for Process Reward Models
 
-This repository contains the data-construction code and data from the data-construction part of a
+This repository contains the code and data for the data-construction part of a
 team course project, *Process Reward Modeling in LLMs* (Heidelberg University, 2026), written by
 Qin Yan. The goal is to build training data for a Process Reward Model (PRM) at four error-label
 granularities, extending the two-category error taxonomy of PathFinder-PRM into a finer, four-category
@@ -10,7 +10,7 @@ Key points of the approach:
 
 - A four-category error taxonomy (Calculation, Method, Prior-step consistency, Domain consistency) that extends PathFinder-PRM's two-category design.
 - LLM-based labeling of candidate steps from PRM800K, with filtering for consistency against PRM800K's human ratings.
-- An extra re-confirmation pass for the rarest category (Prior-step consistency), re-labeling it twice more and keeping only labels that reproduce.
+- An extra re-confirmation pass for the rarest category (Prior-step consistency), re-labeling it twice more and keeping only labels reproduced in at least one re-labeling.
 - A balanced 1:1 sample of error and correct/suboptimal steps, matched on context length and prior-step count.
 - Exclusion of all questions that overlap with the PRMBench evaluation benchmark.
 - Four training-data versions (0/1/2/4-class) that isolate the effect of label granularity.
@@ -68,6 +68,81 @@ Intermediate results (API outputs, candidate pools, recheck logs, etc.) are writ
 | 7 | `build_selection_v1.py` | Excludes PRMBench-overlapping questions, then selects a balanced sample of error and correct/suboptimal steps matched on context length and prior-step count. |
 | 8 | `build_format_preview.py` | Builds the four training-format rows (0/1/2/4-class) for a given record; provides `build_all_versions` used by the final assembly script. |
 | 9 | `build_dataset_v1.py` | Applies the row-construction logic in `build_format_preview.py` to the full selection and writes the four final jsonl files plus the validation-question-id split. |
+
+### Usage
+
+Run all commands from the repository root. Steps 3–5 call the DeepSeek API and incur cost (they need `DEEPSEEK_API_KEY` in `.env`); all other steps run locally and make no API calls.
+
+1. `analyze_prm800k.py` (local)
+
+   ```bash
+   python scripts/analyze_prm800k.py
+   PRM800K_DIR=/path/to/PRM800K python scripts/analyze_prm800k.py   # if PRM800K is stored elsewhere
+   ```
+
+   No command-line arguments; the optional `PRM800K_DIR` environment variable overrides the default `PRM800K/` location (also honored by every later step that loads PRM800K).
+
+2. `prompt_4class_v3.py` (nothing to run)
+
+   This module has no entry point; it only defines `CLS_PROMPT_4CLASS`, which step 3 imports, and step 3 refuses to start if this file's hash has changed.
+
+3. `label_batch_4class_ds.py` (DeepSeek API, incurs cost)
+
+   ```bash
+   python scripts/label_batch_4class_ds.py --start 0 --end 2500 --batch-name batch1
+   python scripts/label_batch_4class_ds.py --start 2500 --end 4500 --batch-name batch2
+   python scripts/label_batch_4class_ds.py --start 4500 --end 7500 --batch-name batch3
+   ```
+
+   `--start`/`--end` select the slice `[start, end)` of the fixed-seed shuffled candidate list (defaults `0` and `2500`), and `--batch-name` (default `batch1`) sets the output prefix `outputs/<batch-name>_results.json`; later steps expect exactly the three batches above, and re-running a command resumes from records already written.
+
+4. `recheck_prior.py` (DeepSeek API, incurs cost)
+
+   ```bash
+   python scripts/recheck_prior.py
+   ```
+
+   No command-line arguments; it re-labels the `prior_ok=0` records of batch1+batch2 and makes no API calls if its pre-run cost estimate exceeds $2.
+
+5. `recheck_prior_batch3.py` (DeepSeek API, incurs cost)
+
+   ```bash
+   python scripts/recheck_prior_batch3.py
+   ```
+
+   No command-line arguments; same as step 4 for batch3, skipping triples already rechecked in step 4.
+
+6. `build_confirmed_labels.py` (local)
+
+   ```bash
+   python scripts/build_confirmed_labels.py
+   ```
+
+   No command-line arguments; it writes `outputs/labels_confirmed_v1.json`.
+
+7. `build_selection_v1.py` (local)
+
+   ```bash
+   python scripts/build_selection_v1.py
+   ```
+
+   No command-line arguments; it writes `outputs/selection_v1.json` and needs the PRMBench preview data described in the note below.
+
+8. `build_format_preview.py` (local)
+
+   ```bash
+   python scripts/build_format_preview.py
+   ```
+
+   No command-line arguments; it writes worked examples to `outputs/format_preview.md` and is optional, since step 9 imports its row-construction logic directly.
+
+9. `build_dataset_v1.py` (local)
+
+   ```bash
+   python scripts/build_dataset_v1.py
+   ```
+
+   No command-line arguments; it writes the four jsonl files and `val_question_ids.json` to `dataset_v1/`.
 
 ### Helper modules
 
