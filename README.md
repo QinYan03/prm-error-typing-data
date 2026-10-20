@@ -1,194 +1,83 @@
 # Fine-Grained Error Typing Data for Process Reward Models
 
-This repository contains the code and data for the data-construction part of a
-team course project, *Process Reward Modeling in LLMs* (Heidelberg University, 2026), written by
-Qin Yan. The goal is to build training data for a Process Reward Model (PRM) at four error-label
-granularities, extending the two-category error taxonomy of PathFinder-PRM into a finer, four-category
-one.
+A data pipeline and dataset for training **process reward models (PRMs)** with a **four-category error taxonomy**, built from the PRM800K step-level math reasoning dataset.
 
-Key points of the approach:
+This repository contains my part, **data construction**, of a team course project (*Process Reward Modeling in LLMs*, Heidelberg University, 2026). Model training and evaluation were done by teammates and are not included here.
 
-- A four-category error taxonomy (Calculation, Method, Prior-step consistency, Domain consistency) that extends PathFinder-PRM's two-category design.
-- LLM-based labeling of candidate steps from PRM800K, with filtering for consistency against PRM800K's human ratings.
-- An extra re-confirmation pass for the rarest category (Prior-step consistency), re-labeling it twice more and keeping only labels reproduced in at least one re-labeling.
-- A balanced 1:1 sample of error and correct/suboptimal steps, matched on context length and prior-step count.
-- Exclusion of all questions that overlap with the PRMBench evaluation benchmark.
-- Four training-data versions (0/1/2/4-class) that isolate the effect of label granularity.
+**Full method write-up:** [`report/data_construction.pdf`](report/data_construction.pdf)
 
-The full method, including the taxonomy design, the annotation and filtering procedure, and the
-dataset versions, is described in [`report/data_construction.pdf`](report/data_construction.pdf).
+## At a glance
 
-## Directory structure
+- **Goal:** extend PathFinder-PRM's two error categories (Math, Consistency) into four (Calculation, Method, Prior-step consistency, Domain consistency), and build training data at four label granularities (0/1/2/4-class) for a controlled comparison.
+- **Scale:** 7,500 human-rated error steps labeled with an LLM (DeepSeek API). 5,952 unique steps kept after consistency filtering. Final balanced dataset of 2,330 steps in four training versions.
+- **Quality control:** LLM labels filtered against human ratings. For the least reliable category (Prior-step consistency), a reproducibility check raised the acceptable-label rate in spot checks from 50% to 83%.
+- **Leakage control:** all questions overlapping with the PRMBench evaluation benchmark removed before sampling.
+- **Tools:** Python, LLM API annotation, prompt design, JSONL data pipelines.
+
+## Pipeline
 
 ```
-.
-├── README.md
-├── LICENSE
-├── requirements.txt
-├── .env.example
-├── scripts/                  # pipeline scripts, run in the order listed below
-├── dataset_v1/                # final deliverable: 4 training-format datasets + validation split
-├── outputs/                   # intermediate files (frozen pilot sample included; the rest is
-│                               # created at runtime, see below)
-└── report/
-    └── data_construction.pdf  # full write-up of the data-construction method
+PRM800K (human step ratings)
+  -> expand solutions into per-step records
+  -> LLM labeling of error steps into 4 categories, discard labels that contradict the human rating
+  -> re-label Prior-step consistency errors twice, keep only labels reproduced at least once
+  -> exclude PRMBench questions, sample error : correct = 1 : 1, matched on context length and step count
+  -> format into 0/1/2/4-class training files with a shared validation split
 ```
 
-## Setup
+## Key design decisions
+
+- **Grounded taxonomy.** The four categories split criteria already present in the original PathFinder-PRM annotation guidelines (9 of 10 criteria are taken from them) instead of inventing new error types.
+- **Human labels first.** Only steps that humans rated as errors are sent to the LLM. Correct and suboptimal steps get their labels directly from the human ratings, following the original pipeline.
+- **One labeling pass, four versions.** The 1-class and 2-class labels are derived from the same 4-class labels by logical OR, so the four versions differ only in label granularity, not in labeling noise.
+- **Balanced, shortcut-resistant sampling.** Errors are oversampled to 1:1 so that rare categories have enough examples. Correct steps are matched to error steps on context length and number of prior steps, because PRM800K annotators stop at the first error and correct steps would otherwise be systematically shorter.
+
+## Dataset (`dataset_v1/`)
+
+All four files are built from the same 2,330 steps (1,165 error, 1,165 correct or suboptimal). Error side by category: Calculation 503, Method 493, Prior-step consistency 75, Domain consistency 498 (a step with several categories is counted in each).
+
+| File | Rows | Prediction target |
+|------|-----:|---|
+| `prm_0class.jsonl` | 2,330 | Correctness only (single stage) |
+| `prm_1class.jsonl` | 4,660 | Error, then Correctness |
+| `prm_2class.jsonl` | 4,660 | Math / Consistency, then Correctness |
+| `prm_4class.jsonl` | 4,660 | Calculation / Method / Prior-step / Domain, then Correctness |
+
+Each row has a `labels` field (target sequence with `<+>` / `<->` label tokens) and an `inputs` field (same sequence with labels replaced by `<extra>`), plus metadata (`id`, `record_id`, `question_id`, `side`, `human_score`, `version`, `stage`). `val_question_ids.json` defines a recommended validation split (5% of questions, seed 42) shared by all four versions.
+
+## Reproducing the pipeline
+
+**Setup**
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env
-# then edit .env and set DEEPSEEK_API_KEY=<your key>
-# GEMINI_API_KEY is only needed if you run the Gemini-based pilot script (label_pilot_4class.py)
+cp .env.example .env    # then set DEEPSEEK_API_KEY in .env
 ```
 
-Scripts that call the DeepSeek or Gemini API load `.env` from this directory.
+Download the four PRM800K files (`phase1_train/test.jsonl`, `phase2_train/test.jsonl`) from [openai/prm800k](https://github.com/openai/prm800k) into `PRM800K/`, or set `PRM800K_DIR`. The PRMBench exclusion step expects a checkout of [PathFinder-PRM](https://github.com/declare-lab/PathFinder-PRM) next to this repository.
 
-## PRM800K
+**Run** (from the repository root). Steps marked *API* call DeepSeek and incur cost.
 
-This project uses the 4 PRM800K jsonl files (`phase1_train.jsonl`, `phase1_test.jsonl`, `phase2_train.jsonl`, `phase2_test.jsonl`), as released with [OpenAI's PRM800K repository](https://github.com/openai/prm800k).
+```bash
+python scripts/analyze_prm800k.py                                                  # load and expand PRM800K
+python scripts/label_batch_4class_ds.py --start 0    --end 2500 --batch-name batch1   # API: LLM labeling
+python scripts/label_batch_4class_ds.py --start 2500 --end 4500 --batch-name batch2   # API
+python scripts/label_batch_4class_ds.py --start 4500 --end 7500 --batch-name batch3   # API
+python scripts/recheck_prior.py                                                    # API: Prior-step re-labeling, batches 1-2
+python scripts/recheck_prior_batch3.py                                             # API: Prior-step re-labeling, batch 3
+python scripts/build_confirmed_labels.py                                           # apply re-labeling results
+python scripts/build_selection_v1.py                                               # PRMBench exclusion and balanced sampling
+python scripts/build_dataset_v1.py                                                 # write the four training files
+```
 
-Download them and place them in `PRM800K/`, or point `scripts/analyze_prm800k.py` at a different location by setting the `PRM800K_DIR` environment variable to an absolute or relative path.
+Notes: intermediate files go to `outputs/`. `outputs/pilot_4class_sample_ds.json` is a frozen list of pilot samples excluded from labeling. Labeling runs resume from records already written, and the re-labeling scripts stop if their cost estimate exceeds $2. The labeling prompt is defined in `scripts/prompt_4class_v3.py`. The remaining files in `scripts/` are helper modules imported by the pipeline.
 
-Intermediate results (API outputs, candidate pools, recheck logs, etc.) are written to `outputs/`, created automatically on first run. Final training data is written to `dataset_v1/`.
+## Acknowledgments
 
-`outputs/pilot_4class_sample_ds.json` is included: it is the frozen list of 200 pilot-stage labeled samples that `label_batch_4class_ds.py` excludes from its batch-labeling candidate pool, so the pilot sample is never labeled twice.
-
-## How to run: scripts (in this order)
-
-| # | Script | What it does |
-|---|--------|---------------|
-| 1 | `analyze_prm800k.py` | Loads and expands the 4 PRM800K jsonl files into per-step records; provides `load_prm800k_dataset`/`expand_records` used by the rest of the pipeline. |
-| 2 | `prompt_4class_v3.py` | Defines the final four-way error-labeling prompt (`CLS_PROMPT_4CLASS`). |
-| 3 | `label_batch_4class_ds.py` | Sends candidate steps (human rating = -1) to the DeepSeek API with the v3 prompt and writes per-batch labeling results. |
-| 4 | `recheck_prior.py` | Re-labels the kept `prior_ok=0` records twice (thinking off / thinking on) to check reproducibility, for batches 1+2. |
-| 5 | `recheck_prior_batch3.py` | Same re-labeling check as above, for batch 3 only (skipping triples already covered). |
-| 6 | `build_confirmed_labels.py` | Confirms or flips `prior_ok` based on the recheck results and produces the confirmed label set. |
-| 7 | `build_selection_v1.py` | Excludes PRMBench-overlapping questions, then selects a balanced sample of error and correct/suboptimal steps matched on context length and prior-step count. |
-| 8 | `build_format_preview.py` | Builds the four training-format rows (0/1/2/4-class) for a given record; provides `build_all_versions` used by the final assembly script. |
-| 9 | `build_dataset_v1.py` | Applies the row-construction logic in `build_format_preview.py` to the full selection and writes the four final jsonl files plus the validation-question-id split. |
-
-### Usage
-
-Run all commands from the repository root. Steps 3–5 call the DeepSeek API and incur cost (they need `DEEPSEEK_API_KEY` in `.env`); all other steps run locally and make no API calls.
-
-1. `analyze_prm800k.py` (local)
-
-   ```bash
-   python scripts/analyze_prm800k.py
-   PRM800K_DIR=/path/to/PRM800K python scripts/analyze_prm800k.py   # if PRM800K is stored elsewhere
-   ```
-
-   No command-line arguments; the optional `PRM800K_DIR` environment variable overrides the default `PRM800K/` location (also honored by every later step that loads PRM800K).
-
-2. `prompt_4class_v3.py` (nothing to run)
-
-   This module has no entry point; it only defines `CLS_PROMPT_4CLASS`, which step 3 imports, and step 3 refuses to start if this file's hash has changed.
-
-3. `label_batch_4class_ds.py` (DeepSeek API, incurs cost)
-
-   ```bash
-   python scripts/label_batch_4class_ds.py --start 0 --end 2500 --batch-name batch1
-   python scripts/label_batch_4class_ds.py --start 2500 --end 4500 --batch-name batch2
-   python scripts/label_batch_4class_ds.py --start 4500 --end 7500 --batch-name batch3
-   ```
-
-   `--start`/`--end` select the slice `[start, end)` of the fixed-seed shuffled candidate list (defaults `0` and `2500`), and `--batch-name` (default `batch1`) sets the output prefix `outputs/<batch-name>_results.json`; later steps expect exactly the three batches above, and re-running a command resumes from records already written.
-
-4. `recheck_prior.py` (DeepSeek API, incurs cost)
-
-   ```bash
-   python scripts/recheck_prior.py
-   ```
-
-   No command-line arguments; it re-labels the `prior_ok=0` records of batch1+batch2 and makes no API calls if its pre-run cost estimate exceeds $2.
-
-5. `recheck_prior_batch3.py` (DeepSeek API, incurs cost)
-
-   ```bash
-   python scripts/recheck_prior_batch3.py
-   ```
-
-   No command-line arguments; same as step 4 for batch3, skipping triples already rechecked in step 4.
-
-6. `build_confirmed_labels.py` (local)
-
-   ```bash
-   python scripts/build_confirmed_labels.py
-   ```
-
-   No command-line arguments; it writes `outputs/labels_confirmed_v1.json`.
-
-7. `build_selection_v1.py` (local)
-
-   ```bash
-   python scripts/build_selection_v1.py
-   ```
-
-   No command-line arguments; it writes `outputs/selection_v1.json` and needs the PRMBench preview data described in the note below.
-
-8. `build_format_preview.py` (local)
-
-   ```bash
-   python scripts/build_format_preview.py
-   ```
-
-   No command-line arguments; it writes worked examples to `outputs/format_preview.md` and is optional, since step 9 imports its row-construction logic directly.
-
-9. `build_dataset_v1.py` (local)
-
-   ```bash
-   python scripts/build_dataset_v1.py
-   ```
-
-   No command-line arguments; it writes the four jsonl files and `val_question_ids.json` to `dataset_v1/`.
-
-### Helper modules
-
-Not run directly; imported by the scripts above.
-
-| Script | What it does |
-|--------|---------------|
-| `prompt_4class_v2.py` | Defines the earlier (v2) four-way error-labeling prompt, used by the pilot scripts below. |
-| `label_pilot_4class.py` | Pilot labeling script using the Gemini API and the v2 prompt on a small stratified sample; also provides `enc` (the tiktoken tokenizer), `make_full_context`, and retry constants reused by later scripts. |
-| `label_pilot_4class_ds.py` | DeepSeek variant of the pilot labeling script (same v2 prompt); provides the `RunConfig`/`RunState`/retry/backoff framework reused by `label_batch_4class_ds.py`, `recheck_prior.py`, and `recheck_prior_batch3.py`. |
-
-Note: `build_selection_v1.py` also reads PRMBench's preview data to exclude overlapping questions, expected at `../PathFinder-PRM/src/evaluation/reward_guided_search/eval_data/PRMBench_Preview/` relative to this directory (i.e. a checkout of the [PathFinder-PRM](https://github.com/declare-lab/PathFinder-PRM) repository as a sibling of this one).
-
-## Dataset: `dataset_v1/`
-
-Four training-format jsonl files, all built from the same 2,330 selected steps (1,165 error + 1,165 correct/suboptimal), differing only in error-label granularity:
-
-| File | Rows | Stages per record |
-|------|-----:|---|
-| `prm_0class.jsonl` | 2,330 | 1 (predicts `Correctness` only) |
-| `prm_1class.jsonl` | 4,660 | 2 (`Error` then `Correctness`) |
-| `prm_2class.jsonl` | 4,660 | 2 (`Math reasoning`/`Consistency` then `Correctness`) |
-| `prm_4class.jsonl` | 4,660 | 2 (`Calculation`/`Method`/`Prior-step consistency`/`Domain consistency` then `Correctness`) |
-
-Each line is a JSON object with two conversation fields plus metadata:
-
-- `labels`: the full target sequence for training (one user turn + one assistant turn), with all label tokens filled in as ground truth.
-- `inputs`: the same structure, but with the label token(s) to be predicted replaced by the placeholder `<extra>`.
-- `id`: unique row id, formatted `{record_id}_{version}_{stage}`.
-- `record_id`: the step's unique id after expanding PRM800K.
-- `question_id`: sha1(question)[:12], shared across all rows for the same question.
-- `side`: `"error"` or `"correct"`.
-- `human_score`: original PRM800K rating (`1`=correct, `0`=suboptimal, `-1`=error).
-- `version`: `"0class"` / `"1class"` / `"2class"` / `"4class"`.
-- `stage`: `"single"` for 0-class, or `1`/`2` for the two-stage versions.
-
-`val_question_ids.json` holds a recommended validation split: 5% of distinct `question_id`s (seed=42), shared across all four versions so results stay comparable. All rows sharing a `question_id` fall on the same side of the split.
-
-## Acknowledgments and data lineage
-
-This dataset is derived from:
-
-- **PRM800K** — Lightman et al., *Let's Verify Step by Step*. [github.com/openai/prm800k](https://github.com/openai/prm800k). Released under the MIT License; this repository's dataset inherits that license (see `LICENSE`).
-- **PathFinder-PRM** — Pala et al., *Error Typing for Smarter Rewards: Improving Process Reward Models with Error-Aware Hierarchical Supervision*. [github.com/declare-lab/PathFinder-PRM](https://github.com/declare-lab/PathFinder-PRM). Its error taxonomy and data-generation logic are the basis this project extends.
-- **PRMBench** — Song et al., *PRMBench: A Fine-grained and Challenging Benchmark for Process-Level Reward Models*. Paper: [arxiv.org/abs/2501.03124](https://arxiv.org/abs/2501.03124); data: [huggingface.co/datasets/hitsmy/PRMBench_Preview](https://huggingface.co/datasets/hitsmy/PRMBench_Preview). Used here only to identify and exclude overlapping questions from the training sample.
+- **PRM800K**: Lightman et al., *Let's Verify Step by Step* ([repo](https://github.com/openai/prm800k), MIT License). Source of all steps and human ratings.
+- **PathFinder-PRM**: Pala et al., *Error Typing for Smarter Rewards* ([repo](https://github.com/declare-lab/PathFinder-PRM)). The error taxonomy and data-generation logic this project extends.
+- **PRMBench**: Song et al., *PRMBench* ([paper](https://arxiv.org/abs/2501.03124), [data](https://huggingface.co/datasets/hitsmy/PRMBench_Preview)). Used only to exclude overlapping questions.
 
 ## License
 
-Released under the MIT License (see `LICENSE`). The underlying PRM800K data is itself MIT-licensed.
+MIT (see `LICENSE`). The underlying PRM800K data is also MIT-licensed.
