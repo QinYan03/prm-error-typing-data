@@ -1,7 +1,5 @@
 # Fine-Grained Error Typing Data for Process Reward Models
 
-Author: Qin Yan
-
 A data pipeline and dataset for training **process reward models (PRMs)** with a **four-category error taxonomy**, built from the PRM800K step-level math reasoning dataset.
 
 PathFinder-PRM first classifies the errors in a solution step into two categories and then predicts whether the step is correct. Its own ablations on PRMBench show a small gain from error typing: 64.9 without error typing, 67.3 with one merged error category and 67.7 with two separate categories. This project asks whether splitting the categories further keeps helping, and provides training data at four label granularities for that comparison.
@@ -83,7 +81,7 @@ Notes: intermediate files go to `outputs/`. `outputs/pilot_4class_sample_ds.json
 - **PathFinder-PRM**: Pala et al., *Error Typing for Smarter Rewards* ([repo](https://github.com/declare-lab/PathFinder-PRM)). The error taxonomy and data-generation logic this project extends.
 - **PRMBench**: Song et al., *PRMBench* ([paper](https://arxiv.org/abs/2501.03124), [data](https://huggingface.co/datasets/hitsmy/PRMBench_Preview)). Used only to exclude overlapping questions.
 
-Implementation was AI-assisted. The design decisions and analysis were made by the author.
+The design decisions and analysis are my own. I used AI coding assistants for the implementation.
 
 ## License
 
